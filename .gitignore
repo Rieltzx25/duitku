@@ -11,3 +11,4 @@ miniapp/node_modules/
 .vscode/
 .idea/
 *.tsbuildinfo
+.claude/
