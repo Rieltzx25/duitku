@@ -66,16 +66,18 @@ Catat pengeluaran semudah chat ke teman.
 
 <b>Command yang tersedia:</b>
 
-/start — mulai / reset
+/start — mulai
 /today — pengeluaran hari ini
 /month — total bulan ini
 /summary — summary bulan ini + insight AI
 /list — 10 transaksi terakhir
 /categories — list kategori
-/dashboard — buka dashboard 📊
-/help — bantuan
+/dashboard — buka dashboard
+/me — info akun & stats
 /delete — hapus transaksi terakhir
-/export — export CSV
+/export — export CSV bulan ini
+/reset — hapus SEMUA data kamu (confirm dulu)
+/help — bantuan
 
 💡 Kalau hasil parsing salah, klik tombol Edit/Hapus di bawah pesan konfirmasi.
 

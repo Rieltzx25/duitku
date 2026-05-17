@@ -190,6 +190,75 @@ export function createBot(env: Env): Bot<Ctx> {
     await ctx.reply(reply, { parse_mode: "HTML" });
   });
 
+  safeCmd("reset", async (ctx) => {
+    if (!ctx.from) return;
+    // Hitung yg akan dihapus
+    const row = await env.DB
+      .prepare("SELECT COUNT(*) as c FROM transactions WHERE user_id = ? AND is_deleted = 0")
+      .bind(ctx.from.id)
+      .first<{ c: number }>();
+    const count = row?.c ?? 0;
+    const kb = new InlineKeyboard()
+      .text("🗑 YA, HAPUS SEMUA", `reset_confirm:${ctx.from.id}`)
+      .text("❌ Batal", `reset_cancel`);
+    await ctx.reply(
+      `⚠️ <b>Reset data?</b>\n\nIni akan menghapus <b>${count} transaksi</b> + semua foto nota kamu permanently. Tidak bisa di-undo.\n\nKategori & akun TIDAK terhapus.`,
+      { parse_mode: "HTML", reply_markup: kb },
+    );
+  });
+
+  bot.callbackQuery(/^reset_confirm:(\d+)$/, async (ctx) => {
+    if (!ctx.from) return;
+    const targetId = parseInt(ctx.match![1]);
+    if (targetId !== ctx.from.id) {
+      await ctx.answerCallbackQuery({ text: "Bukan punya kamu" });
+      return;
+    }
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM transactions WHERE user_id = ?").bind(ctx.from.id),
+      env.DB.prepare("DELETE FROM receipts WHERE user_id = ?").bind(ctx.from.id),
+      env.DB.prepare("DELETE FROM pending_confirmations WHERE user_id = ?").bind(ctx.from.id),
+    ]);
+    await ctx.answerCallbackQuery({ text: "✅ Reset selesai" });
+    await ctx.editMessageText(
+      `✅ <b>Data berhasil di-reset.</b>\n\nSemua transaksi & foto nota udah dihapus. Tinggal mulai catat lagi dari nol — kirim foto atau chat aja!`,
+      { parse_mode: "HTML" },
+    );
+  });
+
+  bot.callbackQuery(/^reset_cancel$/, async (ctx) => {
+    await ctx.answerCallbackQuery({ text: "Dibatalkan" });
+    await ctx.editMessageText("❌ Reset dibatalkan. Data kamu aman.");
+  });
+
+  safeCmd("me", async (ctx) => {
+    if (!ctx.from) return;
+    const stats = await env.DB
+      .prepare(
+        `SELECT COUNT(*) as txn_count, COALESCE(SUM(amount), 0) as total_spent,
+                MIN(occurred_at) as first_txn
+         FROM transactions WHERE user_id = ? AND is_deleted = 0`,
+      )
+      .bind(ctx.from.id)
+      .first<{ txn_count: number; total_spent: number; first_txn: number | null }>();
+    const lines = [
+      `<b>👤 Info akun kamu</b>`,
+      ``,
+      `Telegram ID: <code>${ctx.from.id}</code>`,
+      `Nama: ${ctx.from.first_name ?? "-"}`,
+      `Username: ${ctx.from.username ? "@" + ctx.from.username : "-"}`,
+      ``,
+      `<b>📊 Stats:</b>`,
+      `Total transaksi: ${stats?.txn_count ?? 0}`,
+      `Total spend: ${formatIDRFull(stats?.total_spent ?? 0)}`,
+    ];
+    if (stats?.first_txn) {
+      lines.push(`Transaksi pertama: ${new Date(stats.first_txn * 1000).toLocaleDateString("id-ID")}`);
+    }
+    lines.push(``, `<i>Mau reset semua data? Ketik /reset</i>`);
+    await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
+  });
+
   safeCmd("export", async (ctx) => {
     if (!ctx.from) return;
     const tz = "Asia/Jakarta";
