@@ -268,9 +268,19 @@ export function createBot(env: Env): Bot<Ctx> {
       // Find category
       const cat = await getCategoryByName(env.DB, ctx.from.id, parsed.category);
 
-      const occurredAt = parsed.date
-        ? Math.floor(new Date(parsed.date + "T12:00:00").getTime() / 1000)
-        : nowSec();
+      // Sanity check tanggal: kalau LLM kasih tanggal aneh (>1 tahun lalu atau di masa depan), fallback ke today
+      const todaySec = nowSec();
+      const minDateSec = todaySec - 365 * 86400;
+      const maxDateSec = todaySec + 7 * 86400;
+      let occurredAt = todaySec;
+      if (parsed.date && /^\d{4}-\d{2}-\d{2}$/.test(parsed.date)) {
+        const dateSec = Math.floor(new Date(parsed.date + "T12:00:00Z").getTime() / 1000);
+        if (!isNaN(dateSec) && dateSec >= minDateSec && dateSec <= maxDateSec) {
+          occurredAt = dateSec;
+        } else {
+          console.log(`[PHOTO] Tanggal LLM out of range: ${parsed.date}, fallback ke today`);
+        }
+      }
 
       // Insert transaction
       const source: "photo" | "qris" = parsed.type === "qris" ? "qris" : "photo";
@@ -357,9 +367,16 @@ export function createBot(env: Env): Bot<Ctx> {
       }
 
       const cat = await getCategoryByName(env.DB, ctx.from.id, parsed.category);
-      const occurredAt = parsed.date
-        ? Math.floor(new Date(parsed.date + "T12:00:00").getTime() / 1000)
-        : nowSec();
+      const todaySec = nowSec();
+      const minDateSec = todaySec - 365 * 86400;
+      const maxDateSec = todaySec + 7 * 86400;
+      let occurredAt = todaySec;
+      if (parsed.date && /^\d{4}-\d{2}-\d{2}$/.test(parsed.date)) {
+        const dateSec = Math.floor(new Date(parsed.date + "T12:00:00Z").getTime() / 1000);
+        if (!isNaN(dateSec) && dateSec >= minDateSec && dateSec <= maxDateSec) {
+          occurredAt = dateSec;
+        }
+      }
 
       const txnId = await insertTransaction(env.DB, {
         userId: ctx.from.id,

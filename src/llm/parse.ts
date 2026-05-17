@@ -16,11 +16,16 @@ export async function parseReceiptImage(
   mimeType: string,
 ): Promise<ParsedReceipt> {
   const base64 = arrayBufferToBase64(imageBuffer);
+  // Today di Asia/Jakarta
+  const todayISO = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
   return generateJSON<ParsedReceipt>({
     apiKey: env.GEMINI_API_KEY,
     model: env.GEMINI_MODEL,
     parts: [
-      { text: RECEIPT_PROMPT },
+      { text: RECEIPT_PROMPT(todayISO) },
       { inlineData: { mimeType, data: base64 } },
     ],
     responseSchema: RECEIPT_SCHEMA,
