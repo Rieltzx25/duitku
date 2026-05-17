@@ -14,6 +14,7 @@ import {
   totalInRange,
   aggregateByCategory,
   aggregateByMerchant,
+  claimLoginLink,
 } from "../db/queries";
 import { parseReceiptImage, parseTextInput, generateSummary } from "../llm/parse";
 import {
@@ -26,6 +27,7 @@ import {
   nowSec,
   startOfMonthSec,
   startOfPrevMonthSec,
+  startOfDayLocalSec,
   formatIDRFull,
   monthNameID,
 } from "../lib/time";
@@ -58,31 +60,68 @@ export function createBot(env: Env): Bot<Ctx> {
 
   // ---- COMMANDS ----
 
+  // Helper: wrap command handler dengan global error catch + always-reply
+  const safeCmd = (name: string, fn: (ctx: Ctx) => Promise<void>) =>
+    bot.command(name, async (ctx) => {
+      console.log(`[CMD] /${name} from ${ctx.from?.id}`);
+      try {
+        await fn(ctx);
+      } catch (e: any) {
+        console.error(`[CMD] /${name} error:`, e?.stack ?? e);
+        try {
+          await ctx.reply(`❌ Error: ${String(e?.message ?? e).slice(0, 200)}`);
+        } catch (_) {}
+      }
+    });
+
   bot.command("start", async (ctx) => {
-    const name = ctx.from?.first_name ?? "kamu";
-    await ctx.reply(
-      `Hai *${name}*! 👋\n\nAku DuitKu — bot pencatat pengeluaran kamu.\n\n${formatHelp(env.MINIAPP_URL)}`,
-      { parse_mode: "Markdown" },
-    );
+    console.log(`[CMD] /start from ${ctx.from?.id}, arg='${ctx.match}'`);
+    try {
+      const name = ctx.from?.first_name ?? "kamu";
+      const arg = (typeof ctx.match === "string" ? ctx.match : "").trim();
+
+      // Deep-link login flow: /start login_<token>
+      if (arg.startsWith("login_") && ctx.from) {
+        const token = arg.slice(6);
+        const ok = await claimLoginLink(env.DB, token, ctx.from.id);
+        if (ok) {
+          await ctx.reply(
+            `✅ <b>Login berhasil!</b>\n\nBalik ke browser kamu, dashboard akan otomatis terbuka dalam beberapa detik.`,
+            { parse_mode: "HTML" },
+          );
+        } else {
+          await ctx.reply(`❌ Link login expired atau invalid. Coba lagi dari browser ya.`);
+        }
+        return;
+      }
+
+      await ctx.reply(
+        `Hai <b>${name}</b>! 👋\n\nAku DuitKu — bot pencatat pengeluaran kamu.\n\n${formatHelp(env.MINIAPP_URL)}`,
+        { parse_mode: "HTML" },
+      );
+    } catch (e: any) {
+      console.error(`[CMD] /start error:`, e?.stack ?? e);
+      try { await ctx.reply(`❌ Error: ${String(e?.message ?? e).slice(0, 200)}`); } catch (_) {}
+    }
   });
 
-  bot.command("help", async (ctx) => {
-    await ctx.reply(formatHelp(env.MINIAPP_URL), { parse_mode: "Markdown" });
+  safeCmd("help", async (ctx) => {
+    await ctx.reply(formatHelp(env.MINIAPP_URL), { parse_mode: "HTML" });
   });
 
-  bot.command("today", async (ctx) => {
+  safeCmd("today", async (ctx) => {
     if (!ctx.from) return;
     const tz = "Asia/Jakarta";
     const todayStart = startOfDayLocalSec(tz);
     const tomorrow = todayStart + 86400;
     const { total, count } = await totalInRange(env.DB, ctx.from.id, todayStart, tomorrow);
     await ctx.reply(
-      `*Hari ini:*\n💰 ${formatIDRFull(total)}\n🧾 ${count} transaksi`,
-      { parse_mode: "Markdown" },
+      `<b>Hari ini:</b>\n💰 ${formatIDRFull(total)}\n🧾 ${count} transaksi`,
+      { parse_mode: "HTML" },
     );
   });
 
-  bot.command("month", async (ctx) => {
+  safeCmd("month", async (ctx) => {
     if (!ctx.from) return;
     const tz = "Asia/Jakarta";
     const monthStart = startOfMonthSec(tz);
@@ -90,55 +129,52 @@ export function createBot(env: Env): Bot<Ctx> {
     const { total, count } = await totalInRange(env.DB, ctx.from.id, monthStart, now + 1);
     const byCat = await aggregateByCategory(env.DB, ctx.from.id, monthStart, now + 1);
     const lines = [
-      `*📅 ${monthNameID(new Date(), tz)}*`,
+      `<b>📅 ${monthNameID(new Date(), tz)}</b>`,
       ``,
       `💰 Total: ${formatIDRFull(total)}`,
       `🧾 ${count} transaksi`,
-      ``,
-      `*Per kategori:*`,
     ];
-    for (const c of byCat.results.slice(0, 8)) {
-      const pct = total > 0 ? ((c.total / total) * 100).toFixed(0) : "0";
-      lines.push(`${c.icon ?? "📦"} ${c.name ?? "Tanpa kategori"}: ${formatIDRFull(c.total)} (${pct}%)`);
+    if (byCat.results.length > 0) {
+      lines.push(``, `<b>Per kategori:</b>`);
+      for (const c of byCat.results.slice(0, 8)) {
+        const pct = total > 0 ? ((c.total / total) * 100).toFixed(0) : "0";
+        lines.push(`${c.icon ?? "📦"} ${c.name ?? "Tanpa kategori"}: ${formatIDRFull(c.total)} (${pct}%)`);
+      }
+    } else {
+      lines.push(``, `<i>Belum ada transaksi bulan ini.</i>`);
     }
-    await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+    await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
   });
 
-  bot.command("list", async (ctx) => {
+  safeCmd("list", async (ctx) => {
     if (!ctx.from) return;
     const tz = "Asia/Jakarta";
-    const monthStart = startOfMonthSec(tz);
-    const txns = await listTransactionsInRange(env.DB, ctx.from.id, monthStart, nowSec() + 1);
+    // Last 10 transaksi REGARDLESS of date, biar selalu ada yang ditampilkan
+    const txns = await listTransactionsInRange(env.DB, ctx.from.id, 0, nowSec() + 1);
     const top = txns.results.slice(0, 10);
-    await ctx.reply(formatList(top, tz), { parse_mode: "Markdown" });
+    await ctx.reply(formatList(top, tz), { parse_mode: "HTML" });
   });
 
-  bot.command("categories", async (ctx) => {
+  safeCmd("categories", async (ctx) => {
     if (!ctx.from) return;
     const cats = await listCategories(env.DB, ctx.from.id);
-    const lines = ["*📂 Kategori kamu:*", ""];
+    const lines = ["<b>📂 Kategori kamu:</b>", ""];
     for (const c of cats.results) lines.push(`${c.icon} ${c.name}`);
-    await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+    await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
   });
 
-  bot.command("dashboard", async (ctx) => {
+  safeCmd("dashboard", async (ctx) => {
     await ctx.reply(`📊 Buka dashboard:`, {
       reply_markup: new InlineKeyboard().webApp("Buka Dashboard", env.MINIAPP_URL),
     });
   });
 
-  bot.command("delete", async (ctx) => {
+  safeCmd("delete", async (ctx) => {
     if (!ctx.from) return;
-    const tz = "Asia/Jakarta";
-    const txns = await listTransactionsInRange(
-      env.DB,
-      ctx.from.id,
-      startOfMonthSec(tz),
-      nowSec() + 1,
-    );
+    const txns = await listTransactionsInRange(env.DB, ctx.from.id, 0, nowSec() + 1);
     const last = txns.results[0];
     if (!last) {
-      await ctx.reply("_Belum ada transaksi bulan ini._", { parse_mode: "Markdown" });
+      await ctx.reply("Belum ada transaksi.");
       return;
     }
     await softDeleteTransaction(env.DB, last.id, ctx.from.id);
@@ -147,18 +183,22 @@ export function createBot(env: Env): Bot<Ctx> {
     );
   });
 
-  bot.command("summary", async (ctx) => {
+  safeCmd("summary", async (ctx) => {
     if (!ctx.from) return;
     await ctx.replyWithChatAction("typing");
     const reply = await buildSummaryFor(env, ctx.from.id);
-    await ctx.reply(reply, { parse_mode: "Markdown" });
+    await ctx.reply(reply, { parse_mode: "HTML" });
   });
 
-  bot.command("export", async (ctx) => {
+  safeCmd("export", async (ctx) => {
     if (!ctx.from) return;
     const tz = "Asia/Jakarta";
     const monthStart = startOfMonthSec(tz);
     const txns = await listTransactionsInRange(env.DB, ctx.from.id, monthStart, nowSec() + 1);
+    if (txns.results.length === 0) {
+      await ctx.reply("Belum ada transaksi bulan ini untuk diexport.");
+      return;
+    }
     const header = "id,occurred_at,amount,currency,merchant,description,category,source,payment_method\n";
     const rows = txns.results
       .map((t) =>
@@ -176,10 +216,9 @@ export function createBot(env: Env): Bot<Ctx> {
       )
       .join("\n");
     const csvText = header + rows;
-    const blob = new Blob([csvText], { type: "text/csv" });
-    const buf = await blob.arrayBuffer();
+    const { InputFile } = await import("grammy");
     await ctx.replyWithDocument(
-      new (await import("grammy")).InputFile(new Uint8Array(buf), `duitku-${monthNameID(new Date(), tz).replace(" ", "-")}.csv`),
+      new InputFile(new TextEncoder().encode(csvText), `duitku-${monthNameID(new Date(), tz).replace(" ", "-")}.csv`),
     );
   });
 
@@ -258,14 +297,16 @@ export function createBot(env: Env): Bot<Ctx> {
         .text("🗑 Hapus", `del:${txnId}`);
 
       await ctx.reply(formatReceiptConfirmation(parsed, txnId), {
-        parse_mode: "Markdown",
+        parse_mode: "HTML",
         reply_markup: kb,
       });
     } catch (e: any) {
-      console.error("Photo handler error:", e);
-      await ctx.reply(
-        `❌ Gagal proses foto: ${e?.message ?? "error"}\n\nCoba kirim ulang atau ketik manual ya.`,
-      );
+      console.error("Photo handler error:", e?.stack ?? e);
+      try {
+        await ctx.reply(
+          `❌ Gagal proses foto: ${String(e?.message ?? e).slice(0, 200)}\n\nCoba kirim ulang atau ketik manual ya.`,
+        );
+      } catch (_) {}
     }
   });
 
@@ -273,13 +314,13 @@ export function createBot(env: Env): Bot<Ctx> {
   bot.on("message:text", async (ctx, next) => {
     const replyTo = ctx.message?.reply_to_message?.text;
     if (!replyTo) return next();
-    const m = replyTo.match(/transaksi \*?#(\d+)\*?/);
+    const m = replyTo.match(/transaksi #(\d+)/);
     if (!m) return next();
     if (!ctx.from) return;
     const id = parseInt(m[1]);
     const newAmt = parseAmount(ctx.message!.text);
     if (newAmt === null) {
-      await ctx.reply("❓ Format tidak dikenal. Coba: `75000` atau `75rb`", { parse_mode: "Markdown" });
+      await ctx.reply("❓ Format tidak dikenal. Coba: 75000 atau 75rb");
       return;
     }
     await updateTransactionAmount(env.DB, id, ctx.from.id, newAmt);
@@ -292,9 +333,7 @@ export function createBot(env: Env): Bot<Ctx> {
     const text = ctx.message.text.trim();
     if (text.startsWith("/")) return; // commands sudah dihandle
     if (text.length < 3) {
-      await ctx.reply("_Tulisin lebih lengkap dong, mis: 'kopi 25rb di starbucks'_", {
-        parse_mode: "Markdown",
-      });
+      await ctx.reply("Tulisin lebih lengkap dong, mis: 'kopi 25rb di starbucks'");
       return;
     }
 
@@ -312,8 +351,7 @@ export function createBot(env: Env): Bot<Ctx> {
 
       if (parsed.confidence < 0.5) {
         await ctx.reply(
-          `❓ Aku kurang yakin sama input ini. Bisa lebih jelas?\nContoh: "*kopi 25rb di starbucks*" atau "*bensin 50000*"`,
-          { parse_mode: "Markdown" },
+          `❓ Aku kurang yakin sama input ini. Bisa lebih jelas?\nContoh: "kopi 25rb di starbucks" atau "bensin 50000"`,
         );
         return;
       }
@@ -342,12 +380,14 @@ export function createBot(env: Env): Bot<Ctx> {
         .text("🗑 Hapus", `del:${txnId}`);
 
       await ctx.reply(formatTextConfirmation(parsed, txnId), {
-        parse_mode: "Markdown",
+        parse_mode: "HTML",
         reply_markup: kb,
       });
     } catch (e: any) {
-      console.error("Text handler error:", e);
-      await ctx.reply(`❌ Gagal proses: ${e?.message ?? "error"}`);
+      console.error("Text handler error:", e?.stack ?? e);
+      try {
+        await ctx.reply(`❌ Gagal proses: ${String(e?.message ?? e).slice(0, 200)}`);
+      } catch (_) {}
     }
   });
 
@@ -363,8 +403,8 @@ export function createBot(env: Env): Bot<Ctx> {
     }
     await softDeleteTransaction(env.DB, id, ctx.from.id);
     await ctx.answerCallbackQuery({ text: "🗑 Dihapus" });
-    await ctx.editMessageText(`🗑 _Dihapus: ${formatIDRFull(t.amount)} — ${t.merchant ?? t.description ?? "-"}_`, {
-      parse_mode: "Markdown",
+    await ctx.editMessageText(`🗑 <i>Dihapus: ${formatIDRFull(t.amount)} — ${t.merchant ?? t.description ?? "-"}</i>`, {
+      parse_mode: "HTML",
     });
   });
 
@@ -413,9 +453,8 @@ export function createBot(env: Env): Bot<Ctx> {
     const id = parseInt(ctx.match![1]);
     await ctx.answerCallbackQuery();
     await ctx.reply(
-      `Reply pesan ini dengan nominal baru untuk transaksi *#${id}*.\nContoh: \`75000\` atau \`75rb\``,
+      `Reply pesan ini dengan nominal baru untuk transaksi #${id}.\nContoh: 75000 atau 75rb`,
       {
-        parse_mode: "Markdown",
         reply_markup: { force_reply: true, selective: true },
       },
     );
@@ -439,7 +478,7 @@ export async function buildSummaryFor(env: Env, userId: number): Promise<string>
 
   const { total, count } = await totalInRange(env.DB, userId, monthStart, now + 1);
   if (count === 0) {
-    return `_Belum ada transaksi bulan ini. Yuk mulai catat!_`;
+    return `<i>Belum ada transaksi bulan ini. Yuk mulai catat — kirim foto nota atau chat aja!</i>`;
   }
 
   const { total: prevTotal } = await totalInRange(env.DB, userId, prevStart, monthStart);
@@ -471,12 +510,13 @@ export async function buildSummaryFor(env: Env, userId: number): Promise<string>
     };
   }
 
+  const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const lines = [
-    `*📊 Summary ${monthName}*`,
+    `<b>📊 Summary ${escapeHtml(monthName)}</b>`,
     ``,
-    narrative.headline,
+    escapeHtml(narrative.headline),
     ``,
-    `💰 Total: *${formatIDRFull(total)}*`,
+    `💰 Total: <b>${formatIDRFull(total)}</b>`,
     `🧾 ${count} transaksi`,
   ];
   if (prevTotal > 0) {
@@ -484,29 +524,16 @@ export async function buildSummaryFor(env: Env, userId: number): Promise<string>
     const pct = ((diff / prevTotal) * 100).toFixed(1);
     lines.push(`📈 ${diff > 0 ? "Naik" : "Turun"} ${Math.abs(parseFloat(pct))}% dari bulan lalu`);
   }
-  lines.push(``, `*Top kategori:*`);
+  lines.push(``, `<b>Top kategori:</b>`);
   for (const c of topCategories.slice(0, 5)) {
-    lines.push(`• ${c.name}: ${formatIDRFull(c.total)}`);
+    lines.push(`• ${escapeHtml(c.name)}: ${formatIDRFull(c.total)}`);
   }
-  lines.push(``, `*💡 Insights:*`);
-  for (const ins of narrative.insights) lines.push(`• ${ins}`);
-  lines.push(``, `*🎯 ${narrative.coaching}*`);
+  if (narrative.insights.length > 0) {
+    lines.push(``, `<b>💡 Insights:</b>`);
+    for (const ins of narrative.insights) lines.push(`• ${escapeHtml(ins)}`);
+  }
+  lines.push(``, `<b>🎯 ${escapeHtml(narrative.coaching)}</b>`);
   return lines.join("\n");
-}
-
-function startOfDayLocalSec(tz: string): number {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
-  const y = parts.find((p) => p.type === "year")!.value;
-  const m = parts.find((p) => p.type === "month")!.value;
-  const d = parts.find((p) => p.type === "day")!.value;
-  const tzNow = new Date(new Date().toLocaleString("en-US", { timeZone: tz })).getTime();
-  const offset = tzNow - Date.now();
-  return Math.floor((new Date(`${y}-${m}-${d}T00:00:00`).getTime() - offset) / 1000);
 }
 
 function parseAmount(s: string): number | null {

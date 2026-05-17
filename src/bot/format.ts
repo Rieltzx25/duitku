@@ -1,79 +1,85 @@
 import type { ParsedReceipt, ParsedText } from "../llm/schemas";
 import { formatIDRFull, formatDateID } from "../lib/time";
 
+// HTML escape — safer than Markdown
+const h = (s: string | null | undefined): string => {
+  if (!s) return "";
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+};
+
 export function formatReceiptConfirmation(p: ParsedReceipt, txnId: number): string {
-  const confidence = p.confidence >= 0.85 ? "✅" : p.confidence >= 0.7 ? "⚠️" : "❓";
+  const conf = p.confidence >= 0.85 ? "✅" : p.confidence >= 0.7 ? "⚠️" : "❓";
   const lines = [
-    `${confidence} *Nota tercatat #${txnId}*`,
+    `${conf} <b>Nota tercatat #${txnId}</b>`,
     ``,
-    `🏪 *${escape(p.merchant)}*`,
+    `🏪 <b>${h(p.merchant)}</b>`,
     `💰 ${formatIDRFull(p.total)}`,
   ];
-  if (p.category) lines.push(`📂 ${escape(p.category)}`);
-  if (p.date) lines.push(`📅 ${p.date}`);
-  if (p.paymentMethod) lines.push(`💳 ${escape(p.paymentMethod)}`);
+  if (p.category) lines.push(`📂 ${h(p.category)}`);
+  if (p.date) lines.push(`📅 ${h(p.date)}`);
+  if (p.paymentMethod) lines.push(`💳 ${h(p.paymentMethod)}`);
 
   if (p.items && p.items.length > 0 && p.items.length <= 5) {
-    lines.push(``, `_Detail:_`);
+    lines.push(``, `<i>Detail:</i>`);
     for (const it of p.items) {
       const qty = it.qty ? `${it.qty}× ` : "";
       const sub = it.subtotal ? ` — ${formatIDRFull(it.subtotal)}` : "";
-      lines.push(`• ${qty}${escape(it.name)}${sub}`);
+      lines.push(`• ${qty}${h(it.name)}${sub}`);
     }
   } else if (p.items && p.items.length > 5) {
-    lines.push(``, `_${p.items.length} item — lihat dashboard untuk detail_`);
+    lines.push(``, `<i>${p.items.length} item — lihat dashboard untuk detail</i>`);
   }
 
-  if (p.notes) lines.push(``, `📝 _${escape(p.notes)}_`);
-
-  if (p.confidence < 0.7) {
-    lines.push(``, `⚠️ _Confidence rendah, cek lagi ya._`);
-  }
+  if (p.notes) lines.push(``, `📝 <i>${h(p.notes)}</i>`);
+  if (p.confidence < 0.7) lines.push(``, `⚠️ <i>Confidence rendah, cek lagi ya.</i>`);
 
   return lines.join("\n");
 }
 
 export function formatTextConfirmation(p: ParsedText, txnId: number): string {
   const lines = [
-    `✅ *Tercatat #${txnId}*`,
+    `✅ <b>Tercatat #${txnId}</b>`,
     ``,
     `💰 ${formatIDRFull(p.amount)}`,
-    `📂 ${escape(p.category)}`,
+    `📂 ${h(p.category)}`,
   ];
-  if (p.merchant) lines.push(`🏪 ${escape(p.merchant)}`);
-  if (p.description) lines.push(`📝 ${escape(p.description)}`);
+  if (p.merchant) lines.push(`🏪 ${h(p.merchant)}`);
+  if (p.description) lines.push(`📝 ${h(p.description)}`);
   return lines.join("\n");
 }
 
 export function formatHelp(miniAppUrl: string): string {
-  return `*🎯 Selamat datang di DuitKu!*
+  return `<b>🎯 Selamat datang di DuitKu!</b>
 
 Catat pengeluaran semudah chat ke teman.
 
-*Cara pakai:*
+<b>Cara pakai:</b>
 
-📸 *Foto nota* — kirim foto struk/nota/QRIS, aku auto-baca
-💬 *Chat aja* — contoh:
+📸 <b>Foto nota</b> — kirim foto struk/nota/QRIS
+💬 <b>Chat aja:</b>
   • "kopi 25rb di starbucks"
   • "bensin 50000"
   • "kemarin makan warteg 15rb"
 
-*Command yang tersedia:*
+<b>Command yang tersedia:</b>
 
 /start — mulai / reset
 /today — pengeluaran hari ini
 /month — total bulan ini
-/summary — summary bulan ini
+/summary — summary bulan ini + insight AI
 /list — 10 transaksi terakhir
 /categories — list kategori
-/dashboard — buka dashboard lengkap 📊
+/dashboard — buka dashboard 📊
 /help — bantuan
 /delete — hapus transaksi terakhir
 /export — export CSV
 
-💡 Tips: kalau hasil parsing salah, klik tombol *Edit* atau *Hapus* di bawah pesan konfirmasi.
+💡 Kalau hasil parsing salah, klik tombol Edit/Hapus di bawah pesan konfirmasi.
 
-📊 Dashboard: ${miniAppUrl}`;
+📊 Dashboard: ${h(miniAppUrl)}`;
 }
 
 export function formatList(
@@ -88,19 +94,14 @@ export function formatList(
   }>,
   tz: string,
 ): string {
-  if (txns.length === 0) return "_Belum ada transaksi. Kirim foto nota atau chat untuk mulai!_";
-  const lines = [`*🧾 Transaksi terakhir:*`, ``];
+  if (txns.length === 0) return "<i>Belum ada transaksi. Kirim foto nota atau chat untuk mulai!</i>";
+  const lines = [`<b>🧾 Transaksi terakhir:</b>`, ``];
   for (const t of txns) {
     const icon = t.category_icon ?? "📦";
     const label = t.merchant ?? t.description ?? "Tanpa nama";
     lines.push(
-      `${icon} \`#${t.id}\` ${formatIDRFull(t.amount)} — ${escape(label)}\n  _${formatDateID(t.occurred_at, tz)}_`,
+      `${icon} <code>#${t.id}</code> ${formatIDRFull(t.amount)} — ${h(label)}\n  <i>${h(formatDateID(t.occurred_at, tz))}</i>`,
     );
   }
   return lines.join("\n");
-}
-
-// Escape MarkdownV1 special chars (we use Markdown not MarkdownV2 for simpler escaping)
-function escape(s: string): string {
-  return s.replace(/[*_`\[\]]/g, "");
 }

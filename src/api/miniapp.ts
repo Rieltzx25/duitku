@@ -10,8 +10,12 @@ import {
   updateTransactionCategory,
   updateTransactionAmount,
   getOrCreateUser,
+  createLoginLink,
+  getLoginLink,
+  consumeLoginLink,
 } from "../db/queries";
 import { startOfMonthSec, nowSec } from "../lib/time";
+import { signJwt, verifyJwt, verifyTelegramLogin } from "../lib/jwt";
 
 // Telegram Mini App initData validation
 // https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
@@ -66,47 +70,145 @@ miniAppApi.use(
   "*",
   cors({
     origin: (origin) => origin ?? "*",
-    allowHeaders: ["X-Telegram-Init-Data", "Content-Type"],
+    allowHeaders: ["X-Telegram-Init-Data", "Authorization", "Content-Type"],
     allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    maxAge: 86400,
   }),
 );
 
-// Auth middleware
-miniAppApi.use("*", async (c, next) => {
-  const initData = c.req.header("X-Telegram-Init-Data") ?? "";
-  if (!initData) {
-    return c.json({ error: "Missing X-Telegram-Init-Data" }, 401);
-  }
-  const user = await verifyInitData(initData, c.env.TELEGRAM_BOT_TOKEN);
-  if (!user) {
-    return c.json({ error: "Invalid initData" }, 401);
-  }
-  await getOrCreateUser(c.env.DB, {
-    telegramId: user.id,
-    username: user.username,
-    firstName: user.first_name,
+// Deep-link login flow: generate token, user click open Telegram, bot claim, web poll.
+miniAppApi.post("/auth/init-link", async (c) => {
+  // Generate random URL-safe token (24 bytes → ~32 chars b64)
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  const token = btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+  await createLoginLink(c.env.DB, token, 600); // 10 menit
+  return c.json({ token, expiresIn: 600 });
+});
+
+miniAppApi.get("/auth/check-link", async (c) => {
+  const token = c.req.query("token");
+  if (!token) return c.json({ error: "missing token" }, 400);
+  const link = await getLoginLink(c.env.DB, token);
+  if (!link) return c.json({ ready: false, error: "expired" });
+  if (!link.user_id) return c.json({ ready: false });
+
+  // Claimed → issue JWT and consume
+  const userRow = await c.env.DB.prepare("SELECT * FROM users WHERE telegram_id = ?")
+    .bind(link.user_id)
+    .first<any>();
+  const now = Math.floor(Date.now() / 1000);
+  const jwt = await signJwt(
+    {
+      sub: link.user_id,
+      iat: now,
+      exp: now + 60 * 60 * 24 * 30,
+      username: userRow?.username,
+      firstName: userRow?.first_name,
+    },
+    c.env.TELEGRAM_WEBHOOK_SECRET,
+  );
+  await consumeLoginLink(c.env.DB, token);
+  return c.json({
+    ready: true,
+    token: jwt,
+    user: { id: link.user_id, username: userRow?.username, firstName: userRow?.first_name },
   });
-  c.set("userId", user.id);
-  await next();
+});
+
+// Legacy: Telegram Login Widget (butuh setdomain di BotFather). Tetap di-keep.
+miniAppApi.post("/auth/telegram-login", async (c) => {
+  const data = await c.req.json<Record<string, string>>();
+  const ok = await verifyTelegramLogin(data, c.env.TELEGRAM_BOT_TOKEN);
+  if (!ok) return c.json({ error: "Invalid Telegram login" }, 401);
+
+  const userId = parseInt(data.id);
+  await getOrCreateUser(c.env.DB, {
+    telegramId: userId,
+    username: data.username,
+    firstName: data.first_name,
+  });
+
+  const now = Math.floor(Date.now() / 1000);
+  const token = await signJwt(
+    {
+      sub: userId,
+      iat: now,
+      exp: now + 60 * 60 * 24 * 30, // 30 hari
+      username: data.username,
+      firstName: data.first_name,
+    },
+    c.env.TELEGRAM_WEBHOOK_SECRET, // reuse secret as JWT signing key
+  );
+  return c.json({
+    token,
+    user: { id: userId, username: data.username, firstName: data.first_name },
+  });
+});
+
+// Auth middleware — accept BOTH X-Telegram-Init-Data (Mini App) OR Bearer JWT (web)
+miniAppApi.use("*", async (c, next) => {
+  // Skip auth for /auth/* endpoints
+  if (c.req.path.includes("/auth/")) {
+    return next();
+  }
+
+  // Try JWT first (browser users)
+  const authHeader = c.req.header("Authorization") ?? "";
+  if (authHeader.startsWith("Bearer ")) {
+    const token = authHeader.slice(7);
+    const payload = await verifyJwt(token, c.env.TELEGRAM_WEBHOOK_SECRET);
+    if (payload) {
+      c.set("userId", payload.sub);
+      await next();
+      return;
+    }
+  }
+
+  // Try Telegram Mini App initData
+  const initData = c.req.header("X-Telegram-Init-Data") ?? "";
+  if (initData) {
+    const user = await verifyInitData(initData, c.env.TELEGRAM_BOT_TOKEN);
+    if (user) {
+      await getOrCreateUser(c.env.DB, {
+        telegramId: user.id,
+        username: user.username,
+        firstName: user.first_name,
+      });
+      c.set("userId", user.id);
+      await next();
+      return;
+    }
+  }
+
+  return c.json({ error: "Unauthorized" }, 401);
 });
 
 miniAppApi.get("/me", async (c) => {
   return c.json({ userId: c.get("userId") });
 });
 
+function parseRange(c: any): { from: number; to: number } {
+  const fromRaw = c.req.query("from");
+  const toRaw = c.req.query("to");
+  const from = fromRaw !== undefined ? parseInt(fromRaw) : startOfMonthSec("Asia/Jakarta");
+  const to = toRaw !== undefined && parseInt(toRaw) > 0 ? parseInt(toRaw) : nowSec() + 1;
+  return { from: isNaN(from) ? 0 : from, to: isNaN(to) ? nowSec() + 1 : to };
+}
+
 miniAppApi.get("/transactions", async (c) => {
   const userId = c.get("userId");
-  const from = parseInt(c.req.query("from") ?? "0") || startOfMonthSec("Asia/Jakarta");
-  const to = parseInt(c.req.query("to") ?? "0") || nowSec() + 1;
+  const { from, to } = parseRange(c);
   const txns = await listTransactionsInRange(c.env.DB, userId, from, to);
   return c.json({ transactions: txns.results });
 });
 
 miniAppApi.get("/summary", async (c) => {
   const userId = c.get("userId");
-  const tz = "Asia/Jakarta";
-  const from = parseInt(c.req.query("from") ?? "0") || startOfMonthSec(tz);
-  const to = parseInt(c.req.query("to") ?? "0") || nowSec() + 1;
+  const { from, to } = parseRange(c);
   const total = await totalInRange(c.env.DB, userId, from, to);
   const byCategory = await aggregateByCategory(c.env.DB, userId, from, to);
   return c.json({

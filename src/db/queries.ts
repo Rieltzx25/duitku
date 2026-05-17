@@ -315,3 +315,34 @@ export async function deletePending(d1: D1Database, id: string) {
 export async function listAllUsers(d1: D1Database) {
   return d1.prepare("SELECT * FROM users").all<any>();
 }
+
+// ---- LOGIN LINKS (deep link auth) ----
+
+export async function createLoginLink(d1: D1Database, token: string, ttlSec = 600) {
+  const now = nowSec();
+  await d1
+    .prepare("INSERT INTO login_links (token, expires_at, created_at) VALUES (?, ?, ?)")
+    .bind(token, now + ttlSec, now)
+    .run();
+}
+
+export async function claimLoginLink(d1: D1Database, token: string, userId: number) {
+  const r = await d1
+    .prepare(
+      "UPDATE login_links SET user_id = ?, claimed_at = ? WHERE token = ? AND expires_at > ? AND claimed_at IS NULL",
+    )
+    .bind(userId, nowSec(), token, nowSec())
+    .run();
+  return (r.meta.changes ?? 0) > 0;
+}
+
+export async function getLoginLink(d1: D1Database, token: string) {
+  return d1
+    .prepare("SELECT * FROM login_links WHERE token = ? AND expires_at > ?")
+    .bind(token, nowSec())
+    .first<{ token: string; user_id: number | null; claimed_at: number | null; expires_at: number }>();
+}
+
+export async function consumeLoginLink(d1: D1Database, token: string) {
+  await d1.prepare("DELETE FROM login_links WHERE token = ?").bind(token).run();
+}
