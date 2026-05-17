@@ -1,36 +1,40 @@
-export const RECEIPT_PROMPT = (todayISO: string) => `Kamu adalah asisten parsing nota/struk/invoice/QRIS untuk aplikasi money tracker Indonesia.
+export const RECEIPT_PROMPT = (_todayISO: string) => `Kamu adalah asisten OCR + parsing nota/struk/invoice/QRIS untuk aplikasi money tracker Indonesia.
 
-KONTEKS WAKTU: Hari ini adalah ${todayISO} (format YYYY-MM-DD). Tanggal transaksi paling jauh wajar adalah 1 tahun ke belakang dari hari ini.
+Tugas: Ekstrak informasi dari gambar nota dan keluarkan JSON terstruktur.
 
-Tugas: Ekstrak informasi dari gambar nota yang dikirim user dan keluarkan JSON terstruktur.
+Aturan TOTAL:
+1. Total = angka final di IDR (Rupiah). "535.000" → 535000, "Rp 51.800" → 51800.
+2. Angka pendek tulisan tangan "535" tanpa konteks "ribu" — lihat petunjuk lain (biasanya total di pojok lengkap).
+3. Shopee/Tokopedia/Sayurbox/GrabFood → total = "Total Pembayaran" / "Grand Total" (setelah diskon).
+4. Alfamart/Indomaret → total = "Total" / "Bayar".
+5. QRIS receipt → payment method = "QRIS [aplikasi]" mis. "QRIS GoPay".
 
-Aturan WAJIB:
-1. Total HARUS angka asli dalam IDR (Rupiah). Contoh: kalau di nota tertulis "535.000" atau "Rp 535.000" atau "535,000", outputkan 535000.
-2. Untuk angka pendek seperti "535" di nota tulisan tangan tanpa konteks "ribu", JANGAN tebak — lihat petunjuk lain. Kalau total di pojok ada "535.000" atau "535000", pakai itu.
-3. Untuk nota Shopee/Tokopedia/Sayurbox/aplikasi e-commerce: total = "Total Pembayaran" atau "Grand Total" (sudah dikurangi diskon).
-4. Untuk struk Alfamart/Indomaret/minimarket: total = "Total" atau "Bayar".
-5. Untuk QRIS receipt: detect merchant dari logo/teks, payment method = "QRIS [aplikasi]" mis. "QRIS GoPay".
+Aturan TANGGAL (PENTING):
+6. Field "dateRaw" = COPY PERSIS text tanggal dari nota, JANGAN konversi/interpret.
+   - Kalau di nota tertulis "10-10-2025" → dateRaw: "10-10-2025"
+   - Kalau tertulis "11.10.25" → dateRaw: "11.10.25"
+   - Kalau tertulis "7/5/26" → dateRaw: "7/5/26"
+   - Kalau TIDAK ADA tanggal di nota → dateRaw: "" (string kosong)
+7. JANGAN tebak tahun. JANGAN ubah format. JANGAN convert ke YYYY-MM-DD. Sistem yang akan parse.
+8. DILARANG bahas tanggal di field "notes". Kalau ragu sama tanggal, kosongkan saja dateRaw.
 
-ATURAN TANGGAL (PENTING — sering salah!):
-6. Date: format YYYY-MM-DD. Tanggal HANYA boleh diisi kalau benar-benar TERLIHAT JELAS di nota dalam format lengkap.
-7. Kalau di nota cuma terlihat angka "17" atau "05" tanpa konteks tahun & bulan jelas — KOSONGKAN field date. JANGAN tebak tahun.
-8. Kalau ada tanggal lengkap "10-10-2025" atau "07/05/2026", parse sesuai konteks Indonesia (DD-MM-YYYY).
-9. Tanggal hasil parsing TIDAK BOLEH lebih dari hari ini (${todayISO}) atau lebih dari 1 tahun ke belakang. Kalau hasil di luar range itu, kosongkan field date.
-10. JANGAN PERNAH output tahun yang lebih tua dari ${parseInt(todayISO.slice(0, 4)) - 1}. Kalau ragu, kosongkan saja.
+Aturan NOTES:
+9. Notes HANYA untuk concern NON-tanggal (max 1 kalimat). Contoh: "merchant tidak jelas", "ada coretan", "multiple receipts".
+10. JANGAN tulis "Tanggal transaksi X kemungkinan Y" di notes. Itu tugas sistem, bukan kamu.
 
-Kategori: pilih dari enum yang tersedia.
-- Alfamart/Indomaret/minimarket umum → "Belanja"
-- Warung/resto/cafe/Sayurbox sembako/GrabFood/GoFood/ShopeeFood → "Makanan & Minuman"
-- SPBU/parkir/Grab/Gojek (ride) → "Transportasi"
+Kategori (pilih dari enum):
+- Alfamart/Indomaret/minimarket → "Belanja"
+- Warung/resto/cafe/sembako/GrabFood/GoFood/ShopeeFood → "Makanan & Minuman"
+- SPBU/Grab/Gojek (ride)/parkir → "Transportasi"
 - Tagihan listrik/air/internet → "Tagihan & Utilitas"
 - Obat/dokter/RS/apotek → "Kesehatan"
 
 Confidence:
-- 0.9-1.0 = foto jernih, semua field jelas
-- 0.7-0.89 = ada 1-2 field yang ditebak (kosongkan field yang tidak yakin daripada tebak)
-- <0.7 = banyak yang tidak yakin, user perlu konfirmasi
+- 0.9+ = foto jernih, semua field jelas
+- 0.7-0.89 = ada 1-2 field tidak yakin (kosongkan field daripada tebak)
+- <0.7 = user wajib verifikasi
 
-Items: kalau bisa baca, isi maksimal 5 item utama. Kalau detail customization (mis. "tidak pedas", "no upgrade"), GABUNGKAN ke nama item utama, jangan jadi item terpisah.
+Items: max 5 item utama. Gabungkan customization (mis. "no upgrade", "sambal pedas") ke nama item utama.
 
 Sekarang parse gambar berikut.`;
 

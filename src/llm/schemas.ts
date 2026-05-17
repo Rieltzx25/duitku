@@ -16,9 +16,9 @@ export const RECEIPT_SCHEMA = {
       type: "number",
       description: "Total akhir yang harus/sudah dibayar dalam IDR. Wajib angka, bukan string. Jika tertulis 535.000 berarti 535000.",
     },
-    date: {
+    dateRaw: {
       type: "string",
-      description: "Tanggal transaksi dalam format YYYY-MM-DD. Jika tidak ada, kosongkan.",
+      description: "Tanggal SEPERTI YANG TERTULIS PERSIS di nota — copy text-nya, JANGAN konversi. Contoh: '10-10-2025', '11.10.25', '07/05/26'. KOSONGKAN ('') kalau tidak ada tanggal di nota. JANGAN tebak.",
     },
     items: {
       type: "array",
@@ -60,7 +60,7 @@ export const RECEIPT_SCHEMA = {
     },
     notes: {
       type: "string",
-      description: "Catatan tambahan jika ada hal yang tidak yakin atau perlu user verifikasi.",
+      description: "Catatan SINGKAT (max 1 kalimat) tentang masalah parsing NON-tanggal yang perlu user perhatikan. Contoh: 'merchant tidak jelas', 'ada coretan di total', 'multiple transaksi di 1 nota'. DILARANG membahas tanggal di sini — analisis tanggal ditangani sistem.",
     },
   },
   required: ["type", "merchant", "total", "category", "confidence"],
@@ -133,7 +133,7 @@ export interface ParsedReceipt {
   type: "receipt" | "qris" | "invoice" | "handwritten" | "unknown";
   merchant: string;
   total: number;
-  date?: string;
+  dateRaw?: string; // raw text dari nota — code yang interpret
   items?: Array<{ name: string; qty?: number; unitPrice?: number; subtotal?: number }>;
   category: string;
   paymentMethod?: string;
