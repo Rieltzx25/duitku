@@ -150,9 +150,22 @@ miniAppApi.get("/receipt/:id", async (c) => {
     .bind(id, userId)
     .first<any>();
   if (!r) return c.json({ error: "not found" }, 404);
-  const obj = await c.env.RECEIPTS.get(r.r2_key);
-  if (!obj) return c.json({ error: "not found in r2" }, 404);
-  return new Response(obj.body, {
-    headers: { "Content-Type": r.mime, "Cache-Control": "private, max-age=3600" },
+
+  // Ambil URL fresh dari Telegram (file URL expire ~1 jam, jadi selalu refresh)
+  const infoRes = await fetch(
+    `https://api.telegram.org/bot${c.env.TELEGRAM_BOT_TOKEN}/getFile?file_id=${r.telegram_file_id}`,
+  );
+  const info = (await infoRes.json()) as any;
+  if (!info.ok || !info.result?.file_path) {
+    return c.json({ error: "file not available", details: info }, 404);
+  }
+  const fileRes = await fetch(
+    `https://api.telegram.org/file/bot${c.env.TELEGRAM_BOT_TOKEN}/${info.result.file_path}`,
+  );
+  return new Response(fileRes.body, {
+    headers: {
+      "Content-Type": r.mime,
+      "Cache-Control": "private, max-age=600",
+    },
   });
 });

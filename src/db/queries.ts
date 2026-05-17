@@ -98,7 +98,8 @@ export async function saveReceipt(
   data: {
     id: string;
     userId: number;
-    r2Key: string;
+    telegramFileId: string;
+    telegramFileUniqueId?: string;
     mime: string;
     sizeBytes?: number;
     ocrJson: string;
@@ -106,10 +107,19 @@ export async function saveReceipt(
 ) {
   await d1
     .prepare(
-      `INSERT INTO receipts (id, user_id, r2_key, mime, size_bytes, ocr_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO receipts (id, user_id, telegram_file_id, telegram_file_unique_id, mime, size_bytes, ocr_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .bind(data.id, data.userId, data.r2Key, data.mime, data.sizeBytes ?? null, data.ocrJson, nowSec())
+    .bind(
+      data.id,
+      data.userId,
+      data.telegramFileId,
+      data.telegramFileUniqueId ?? null,
+      data.mime,
+      data.sizeBytes ?? null,
+      data.ocrJson,
+      nowSec(),
+    )
     .run();
 }
 

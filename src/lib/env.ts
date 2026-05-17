@@ -1,7 +1,6 @@
 export interface Env {
   // Bindings
   DB: D1Database;
-  RECEIPTS: R2Bucket;
 
   // Vars
   DEFAULT_TIMEZONE: string;

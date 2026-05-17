@@ -29,10 +29,9 @@ export const receipts = sqliteTable(
   {
     id: text("id").primaryKey(), // uuid
     userId: integer("user_id").notNull(),
-    r2Key: text("r2_key").notNull(),
+    telegramFileId: text("telegram_file_id").notNull(), // pakai Telegram sebagai storage
+    telegramFileUniqueId: text("telegram_file_unique_id"),
     mime: text("mime").notNull(),
-    width: integer("width"),
-    height: integer("height"),
     sizeBytes: integer("size_bytes"),
     ocrJson: text("ocr_json"), // raw structured output from Gemini
     createdAt: integer("created_at").notNull(),

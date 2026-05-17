@@ -1,9 +1,9 @@
 import { getInitData } from "./telegram";
 
-// Pas dev mode (di browser biasa), arahin ke worker localhost
+// Production: ke worker yang sudah deployed
 const API_BASE = import.meta.env.DEV
   ? "http://localhost:8787/api"
-  : "https://duitku.YOUR-SUBDOMAIN.workers.dev/api"; // ⚠️ ganti setelah deploy
+  : "https://duitku.duitku-cliff.workers.dev/api";
 
 async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {

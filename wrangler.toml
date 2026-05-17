@@ -10,12 +10,8 @@ crons = ["0 1 1 * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "duitku_db"
-database_id = "REPLACE_WITH_YOUR_D1_ID_AFTER_CREATE"
+database_id = "5a8b911b-1653-49cb-a178-625cbcd3b693"
 migrations_dir = "migrations"
-
-[[r2_buckets]]
-binding = "RECEIPTS"
-bucket_name = "duitku-receipts"
 
 [vars]
 # Non-secret vars di sini. Secrets pakai `wrangler secret put`

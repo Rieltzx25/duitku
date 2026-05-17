@@ -24,10 +24,9 @@ CREATE INDEX `cat_user_idx` ON `categories` (`user_id`);
 CREATE TABLE `receipts` (
   `id` text PRIMARY KEY NOT NULL,
   `user_id` integer NOT NULL,
-  `r2_key` text NOT NULL,
+  `telegram_file_id` text NOT NULL,
+  `telegram_file_unique_id` text,
   `mime` text NOT NULL,
-  `width` integer,
-  `height` integer,
   `size_bytes` integer,
   `ocr_json` text,
   `created_at` integer NOT NULL

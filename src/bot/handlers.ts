@@ -207,22 +207,20 @@ export function createBot(env: Env): Bot<Ctx> {
       if (!res.ok) throw new Error(`Download failed: ${res.status}`);
       const imageBuffer = await res.arrayBuffer();
 
-      // Simpan ke R2
+      // Pakai Telegram sebagai storage: cuma simpan file_id-nya
       const receiptId = crypto.randomUUID();
       const ext = file.file_path.split(".").pop() ?? "jpg";
-      const r2Key = `users/${ctx.from.id}/${receiptId}.${ext}`;
       const mime = ext === "png" ? "image/png" : "image/jpeg";
 
-      await env.RECEIPTS.put(r2Key, imageBuffer, { httpMetadata: { contentType: mime } });
-
-      // Parse dengan Gemini
+      // Parse dengan Gemini (foto sudah didownload ke memory)
       const parsed = await parseReceiptImage(env, imageBuffer, mime);
 
-      // Save receipt record
+      // Save receipt record (cuma metadata + telegram file_id)
       await saveReceipt(env.DB, {
         id: receiptId,
         userId: ctx.from.id,
-        r2Key,
+        telegramFileId: largest.file_id,
+        telegramFileUniqueId: largest.file_unique_id,
         mime,
         sizeBytes: imageBuffer.byteLength,
         ocrJson: JSON.stringify(parsed),
