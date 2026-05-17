@@ -1,0 +1,33 @@
+{
+  "name": "duitku",
+  "version": "0.1.0",
+  "description": "Money tracker via Telegram + Gemini AI. Free forever.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply duitku_db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply duitku_db --remote",
+    "db:studio": "drizzle-kit studio",
+    "miniapp:dev": "cd miniapp && pnpm dev",
+    "miniapp:build": "cd miniapp && pnpm build",
+    "miniapp:deploy": "cd miniapp && pnpm build && wrangler pages deploy dist --project-name=duitku-miniapp",
+    "setup:webhook": "node scripts/set-webhook.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@google/genai": "^1.27.0",
+    "drizzle-orm": "^0.39.0",
+    "grammy": "^1.40.0",
+    "hono": "^4.10.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20251201.0",
+    "drizzle-kit": "^0.30.0",
+    "typescript": "^5.7.0",
+    "wrangler": "^4.92.0"
+  },
+  "packageManager": "pnpm@10.29.3"
+}

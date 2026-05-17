@@ -1,0 +1,30 @@
+name = "duitku"
+main = "src/index.ts"
+compatibility_date = "2025-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Cron: tiap tanggal 1 jam 01:00 UTC (08:00 WIB)
+[triggers]
+crons = ["0 1 1 * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "duitku_db"
+database_id = "REPLACE_WITH_YOUR_D1_ID_AFTER_CREATE"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "RECEIPTS"
+bucket_name = "duitku-receipts"
+
+[vars]
+# Non-secret vars di sini. Secrets pakai `wrangler secret put`
+DEFAULT_TIMEZONE = "Asia/Jakarta"
+DEFAULT_CURRENCY = "IDR"
+GEMINI_MODEL = "gemini-2.5-flash-lite"
+MINIAPP_URL = "https://duitku-miniapp.pages.dev"
+
+# Secrets (jangan commit, set via wrangler secret put):
+#   TELEGRAM_BOT_TOKEN
+#   TELEGRAM_WEBHOOK_SECRET
+#   GEMINI_API_KEY

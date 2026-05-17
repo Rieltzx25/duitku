@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>DuitKu Dashboard</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      html, body, #root {
+        margin: 0; padding: 0; min-height: 100vh;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: var(--tg-theme-bg-color, #fff);
+        color: var(--tg-theme-text-color, #000);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
