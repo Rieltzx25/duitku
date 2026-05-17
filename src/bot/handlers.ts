@@ -375,7 +375,13 @@ export function createBot(env: Env): Bot<Ctx> {
         .row()
         .text("🗑 Hapus", `del:${txnId}`);
 
-      await ctx.reply(formatReceiptConfirmation(parsed, txnId), {
+      // Format tanggal yang benar (sama dengan yang disimpan di DB)
+      const effectiveDateISO = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Jakarta",
+        year: "numeric", month: "2-digit", day: "2-digit",
+      }).format(new Date(occurredAt * 1000));
+
+      await ctx.reply(formatReceiptConfirmation(parsed, txnId, effectiveDateISO), {
         parse_mode: "HTML",
         reply_markup: kb,
       });

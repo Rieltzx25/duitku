@@ -10,7 +10,11 @@ const h = (s: string | null | undefined): string => {
     .replace(/>/g, "&gt;");
 };
 
-export function formatReceiptConfirmation(p: ParsedReceipt, txnId: number): string {
+export function formatReceiptConfirmation(
+  p: ParsedReceipt,
+  txnId: number,
+  effectiveDateISO: string, // tanggal yang BENAR-BENAR disimpan (sudah di-clamp)
+): string {
   const conf = p.confidence >= 0.85 ? "✅" : p.confidence >= 0.7 ? "⚠️" : "❓";
   const lines = [
     `${conf} <b>Nota tercatat #${txnId}</b>`,
@@ -19,7 +23,7 @@ export function formatReceiptConfirmation(p: ParsedReceipt, txnId: number): stri
     `💰 ${formatIDRFull(p.total)}`,
   ];
   if (p.category) lines.push(`📂 ${h(p.category)}`);
-  if (p.date) lines.push(`📅 ${h(p.date)}`);
+  lines.push(`📅 ${h(effectiveDateISO)}`);
   if (p.paymentMethod) lines.push(`💳 ${h(p.paymentMethod)}`);
 
   if (p.items && p.items.length > 0 && p.items.length <= 5) {
