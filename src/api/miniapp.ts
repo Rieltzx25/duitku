@@ -13,8 +13,18 @@ import {
   createLoginLink,
   getLoginLink,
   consumeLoginLink,
+  listBudgets,
+  upsertBudget,
+  deleteBudget,
+  spendByCategory,
+  getUserSettings,
+  updateUserSettings,
+  updateTransactionFull,
+  dailyTotals,
+  insertTransaction,
+  getCategoryByName,
 } from "../db/queries";
-import { startOfMonthSec, nowSec } from "../lib/time";
+import { startOfMonthSec, startOfPrevMonthSec, nowSec } from "../lib/time";
 import { signJwt, verifyJwt, verifyTelegramLogin } from "../lib/jwt";
 
 // Telegram Mini App initData validation
@@ -156,6 +166,20 @@ miniAppApi.use("*", async (c, next) => {
     return next();
   }
 
+  // Special case: /receipt/:id can accept JWT in query param `_t`
+  // (because <img src> tags can't send Authorization header)
+  if (c.req.path.includes("/receipt/")) {
+    const tokenQ = c.req.query("_t");
+    if (tokenQ) {
+      const payload = await verifyJwt(tokenQ, c.env.TELEGRAM_WEBHOOK_SECRET);
+      if (payload) {
+        c.set("userId", payload.sub);
+        await next();
+        return;
+      }
+    }
+  }
+
   // Try JWT first (browser users)
   const authHeader = c.req.header("Authorization") ?? "";
   if (authHeader.startsWith("Bearer ")) {
@@ -241,6 +265,157 @@ miniAppApi.put("/transactions/:id", async (c) => {
   if (typeof body.categoryId === "number") {
     await updateTransactionCategory(c.env.DB, id, userId, body.categoryId);
   }
+  return c.json({ ok: true });
+});
+
+// ---- BUDGETS ----
+miniAppApi.get("/budgets", async (c) => {
+  const userId = c.get("userId");
+  const tz = "Asia/Jakarta";
+  const monthStart = startOfMonthSec(tz);
+  const now = nowSec();
+  const [budgets, spending] = await Promise.all([
+    listBudgets(c.env.DB, userId),
+    spendByCategory(c.env.DB, userId, monthStart, now + 1),
+  ]);
+  const total = await totalInRange(c.env.DB, userId, monthStart, now + 1);
+  return c.json({
+    budgets: budgets.results.map((b) => ({
+      id: b.id,
+      categoryId: b.category_id,
+      categoryName: b.category_name,
+      categoryIcon: b.category_icon,
+      amount: b.amount,
+      spent: b.category_id === null ? total.total : spending.get(b.category_id) ?? 0,
+    })),
+  });
+});
+
+miniAppApi.post("/budgets", async (c) => {
+  const userId = c.get("userId");
+  const body = await c.req.json<{ categoryId: number | null; amount: number }>();
+  if (typeof body.amount !== "number" || body.amount <= 0) {
+    return c.json({ error: "amount must be > 0" }, 400);
+  }
+  const id = await upsertBudget(c.env.DB, userId, body.categoryId, body.amount);
+  return c.json({ id, ok: true });
+});
+
+miniAppApi.delete("/budgets/:id", async (c) => {
+  const userId = c.get("userId");
+  const id = parseInt(c.req.param("id"));
+  await deleteBudget(c.env.DB, id, userId);
+  return c.json({ ok: true });
+});
+
+// ---- TRENDS (line chart data) ----
+miniAppApi.get("/trends/daily", async (c) => {
+  const userId = c.get("userId");
+  const { from, to } = parseRange(c);
+  const series = await dailyTotals(c.env.DB, userId, from, to);
+  return c.json({ series });
+});
+
+// ---- COMPARISON (this period vs previous) ----
+miniAppApi.get("/comparison", async (c) => {
+  const userId = c.get("userId");
+  const tz = "Asia/Jakarta";
+  const now = nowSec();
+  const monthStart = startOfMonthSec(tz);
+  const prevStart = startOfPrevMonthSec(tz);
+  const [thisMonth, lastMonth] = await Promise.all([
+    totalInRange(c.env.DB, userId, monthStart, now + 1),
+    totalInRange(c.env.DB, userId, prevStart, monthStart),
+  ]);
+  const dayInMonth = Math.max(1, Math.floor((now - monthStart) / 86400) + 1);
+  const avgPerDay = thisMonth.total / dayInMonth;
+  return c.json({
+    thisMonth: thisMonth.total,
+    lastMonth: lastMonth.total,
+    thisMonthCount: thisMonth.count,
+    lastMonthCount: lastMonth.count,
+    avgPerDay,
+    dayInMonth,
+  });
+});
+
+// ---- MANUAL ADD TRANSACTION ----
+miniAppApi.post("/transactions", async (c) => {
+  const userId = c.get("userId");
+  const body = await c.req.json<{
+    amount: number;
+    merchant?: string;
+    description?: string;
+    categoryName?: string;
+    occurredAt?: number; // unix sec
+    paymentMethod?: string;
+  }>();
+  if (!body.amount || body.amount <= 0) return c.json({ error: "amount required > 0" }, 400);
+
+  let categoryId: number | null = null;
+  if (body.categoryName) {
+    const cat = await getCategoryByName(c.env.DB, userId, body.categoryName);
+    categoryId = cat?.id ?? null;
+  }
+  const id = await insertTransaction(c.env.DB, {
+    userId,
+    amount: body.amount,
+    currency: "IDR",
+    categoryId,
+    merchant: body.merchant ?? null,
+    description: body.description ?? null,
+    occurredAt: body.occurredAt ?? nowSec(),
+    source: "manual",
+    rawInput: null,
+    paymentMethod: body.paymentMethod ?? null,
+  });
+  return c.json({ id, ok: true });
+});
+
+// ---- FULL UPDATE TRANSACTION ----
+miniAppApi.patch("/transactions/:id", async (c) => {
+  const userId = c.get("userId");
+  const id = parseInt(c.req.param("id"));
+  const body = await c.req.json<any>();
+  let categoryId: number | null | undefined = undefined;
+  if (body.categoryName !== undefined) {
+    if (body.categoryName === null || body.categoryName === "") {
+      categoryId = null;
+    } else {
+      const cat = await getCategoryByName(c.env.DB, userId, body.categoryName);
+      categoryId = cat?.id ?? null;
+    }
+  }
+  await updateTransactionFull(c.env.DB, id, userId, {
+    amount: body.amount,
+    categoryId,
+    merchant: body.merchant,
+    description: body.description,
+    occurredAt: body.occurredAt,
+    paymentMethod: body.paymentMethod,
+  });
+  return c.json({ ok: true });
+});
+
+// ---- SETTINGS ----
+miniAppApi.get("/settings", async (c) => {
+  const userId = c.get("userId");
+  const s = await getUserSettings(c.env.DB, userId);
+  return c.json({
+    budgetAlertsEnabled: !!s.budget_alerts_enabled,
+    weeklyInsightsEnabled: !!s.weekly_insights_enabled,
+    monthlySummaryEnabled: !!s.monthly_summary_enabled,
+  });
+});
+
+miniAppApi.patch("/settings", async (c) => {
+  const userId = c.get("userId");
+  const body = await c.req.json<any>();
+  await updateUserSettings(c.env.DB, userId, {
+    budget_alerts_enabled: body.budgetAlertsEnabled,
+    weekly_insights_enabled: body.weeklyInsightsEnabled,
+    monthly_summary_enabled: body.monthlySummaryEnabled,
+  });
   return c.json({ ok: true });
 });
 

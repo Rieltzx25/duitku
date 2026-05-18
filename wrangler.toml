@@ -3,9 +3,12 @@ main = "src/index.ts"
 compatibility_date = "2025-11-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Cron: tiap tanggal 1 jam 01:00 UTC (08:00 WIB)
+# Cron triggers (UTC):
+# - 01:00 tgl 1 (08:00 WIB) → monthly summary
+# - 04:00 Minggu (11:00 WIB) → weekly insights
+# - 03:00 setiap hari (10:00 WIB) → budget alerts
 [triggers]
-crons = ["0 1 1 * *"]
+crons = ["0 1 1 * *", "0 4 * * SUN", "0 3 * * *"]
 
 [[d1_databases]]
 binding = "DB"

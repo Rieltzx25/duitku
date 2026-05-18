@@ -76,6 +76,41 @@ export const pendingConfirmations = sqliteTable("pending_confirmations", {
   expiresAt: integer("expires_at").notNull(),
 });
 
+export const budgets = sqliteTable(
+  "budgets",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: integer("user_id").notNull(),
+    categoryId: integer("category_id"), // null = overall budget
+    amount: real("amount").notNull(),
+    period: text("period").notNull().default("monthly"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => ({ userIdx: index("budget_user_idx").on(t.userId) }),
+);
+
+export const alertLog = sqliteTable(
+  "alert_log",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: integer("user_id").notNull(),
+    kind: text("kind").notNull(), // 'budget_50' | 'budget_80' | 'budget_100' | 'weekly_insight' | 'monthly_summary'
+    key: text("key").notNull(), // dedup key, mis. '2026-05-makanan'
+    sentAt: integer("sent_at").notNull(),
+  },
+  (t) => ({ lookupIdx: index("alert_lookup_idx").on(t.userId, t.kind, t.key) }),
+);
+
+export const userSettings = sqliteTable("user_settings", {
+  userId: integer("user_id").primaryKey(),
+  budgetAlertsEnabled: integer("budget_alerts_enabled", { mode: "boolean" }).notNull().default(true),
+  weeklyInsightsEnabled: integer("weekly_insights_enabled", { mode: "boolean" }).notNull().default(true),
+  monthlySummaryEnabled: integer("monthly_summary_enabled", { mode: "boolean" }).notNull().default(true),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export type Budget = typeof budgets.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Transaction = typeof transactions.$inferSelect;

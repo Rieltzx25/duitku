@@ -4,6 +4,7 @@ import type { Env } from "./lib/env";
 import { createBot } from "./bot/handlers";
 import { miniAppApi } from "./api/miniapp";
 import { runMonthlySummary } from "./cron/summary";
+import { runDailyBudgetCheck, runWeeklyInsights } from "./cron/alerts";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -31,7 +32,19 @@ app.get("/health", (c) =>
 
 export default {
   fetch: app.fetch,
-  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(runMonthlySummary(env));
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    const d = new Date(event.scheduledTime);
+    // Cron triggers: budget daily (3 UTC = 10 WIB), weekly Sunday (4 UTC), monthly 1st (1 UTC = 8 WIB)
+    const hour = d.getUTCHours();
+    const dayOfMonth = d.getUTCDate();
+    const dayOfWeek = d.getUTCDay(); // 0 = Sunday
+
+    if (dayOfMonth === 1 && hour === 1) {
+      ctx.waitUntil(runMonthlySummary(env));
+    } else if (dayOfWeek === 0 && hour === 4) {
+      ctx.waitUntil(runWeeklyInsights(env));
+    } else {
+      ctx.waitUntil(runDailyBudgetCheck(env));
+    }
   },
 };

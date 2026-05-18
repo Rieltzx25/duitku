@@ -21,7 +21,8 @@
     "@google/genai": "^1.27.0",
     "drizzle-orm": "^0.39.0",
     "grammy": "^1.40.0",
-    "hono": "^4.10.0"
+    "hono": "^4.10.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20251201.0",

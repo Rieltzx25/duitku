@@ -191,6 +191,102 @@ export function createBot(env: Env): Bot<Ctx> {
     await ctx.reply(reply, { parse_mode: "HTML" });
   });
 
+  safeCmd("budget", async (ctx) => {
+    if (!ctx.from) return;
+    const { listBudgets, spendByCategory } = await import("../db/queries");
+    const tz = "Asia/Jakarta";
+    const monthStart = startOfMonthSec(tz);
+    const now = nowSec();
+    const [budgets, spending, totalRow] = await Promise.all([
+      listBudgets(env.DB, ctx.from.id),
+      spendByCategory(env.DB, ctx.from.id, monthStart, now + 1),
+      totalInRange(env.DB, ctx.from.id, monthStart, now + 1),
+    ]);
+
+    if (budgets.results.length === 0) {
+      await ctx.reply(
+        `<b>💰 Belum ada budget</b>\n\nSet budget di dashboard biar bisa di-monitor pengeluaran kamu.\n\nAtau set langsung di sini:\n<code>/setbudget overall 5000000</code>\n<code>/setbudget Makanan 1500000</code>`,
+        { parse_mode: "HTML" },
+      );
+      return;
+    }
+
+    const lines = [`<b>💰 Budget bulan ini</b>`, ``];
+    for (const b of budgets.results) {
+      const spent = b.category_id === null ? totalRow.total : spending.get(b.category_id) ?? 0;
+      const pct = b.amount > 0 ? (spent / b.amount) * 100 : 0;
+      const bar = barChart(pct, 10);
+      const icon = b.category_icon ?? (b.category_id === null ? "💵" : "📦");
+      const name = b.category_name ?? "Overall";
+      const status = pct >= 100 ? "🔴" : pct >= 80 ? "🟠" : pct >= 50 ? "🟡" : "🟢";
+      lines.push(
+        `${status} ${icon} <b>${name}</b>\n${bar} ${pct.toFixed(0)}%\n${formatIDRFull(spent)} / ${formatIDRFull(b.amount)}`,
+        ``,
+      );
+    }
+    lines.push(`<i>Set/edit lewat /setbudget atau dashboard</i>`);
+    await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
+  });
+
+  safeCmd("setbudget", async (ctx) => {
+    if (!ctx.from) return;
+    const { upsertBudget } = await import("../db/queries");
+    const arg = (typeof ctx.match === "string" ? ctx.match : "").trim();
+    if (!arg) {
+      await ctx.reply(
+        `<b>Cara pakai:</b>\n<code>/setbudget overall 5000000</code>\n<code>/setbudget Makanan 1500000</code>\n\nKategori valid: overall, Makanan, Belanja, Transportasi, Tagihan, Hiburan, Kesehatan, Pendidikan, Investasi, Transfer, Lain`,
+        { parse_mode: "HTML" },
+      );
+      return;
+    }
+    const parts = arg.split(/\s+/);
+    if (parts.length < 2) {
+      await ctx.reply("Format salah. Contoh: <code>/setbudget Makanan 1500000</code>", { parse_mode: "HTML" });
+      return;
+    }
+    const amtStr = parts[parts.length - 1];
+    const catRaw = parts.slice(0, -1).join(" ");
+    const amount = parseAmount(amtStr);
+    if (!amount || amount <= 0) {
+      await ctx.reply("Nominal tidak valid. Contoh: <code>1500000</code> atau <code>1.5jt</code>", { parse_mode: "HTML" });
+      return;
+    }
+    let categoryId: number | null = null;
+    let categoryLabel = "Overall";
+    if (catRaw.toLowerCase() !== "overall") {
+      // Find by partial match
+      const cats = await listCategories(env.DB, ctx.from.id);
+      const found = cats.results.find((c) =>
+        c.name.toLowerCase().includes(catRaw.toLowerCase()),
+      );
+      if (!found) {
+        await ctx.reply(`Kategori "${catRaw}" tidak ditemukan. Ketik /categories untuk lihat list.`);
+        return;
+      }
+      categoryId = found.id;
+      categoryLabel = `${found.icon} ${found.name}`;
+    }
+    await upsertBudget(env.DB, ctx.from.id, categoryId, amount);
+    await ctx.reply(`✅ Budget <b>${categoryLabel}</b> di-set ke ${formatIDRFull(amount)}/bulan.`, {
+      parse_mode: "HTML",
+    });
+  });
+
+  safeCmd("settings", async (ctx) => {
+    if (!ctx.from) return;
+    const { getUserSettings } = await import("../db/queries");
+    const s = await getUserSettings(env.DB, ctx.from.id);
+    const fmt = (v: any) => (v ? "✅ ON" : "❌ OFF");
+    await ctx.reply(
+      `<b>⚙️ Pengaturan Notifikasi</b>\n\n` +
+        `Budget alerts: ${fmt(s.budget_alerts_enabled)}\n` +
+        `Weekly insights: ${fmt(s.weekly_insights_enabled)}\n` +
+        `Monthly summary: ${fmt(s.monthly_summary_enabled)}\n\n` +
+        `<i>Toggle dari dashboard → tab Settings</i>`,
+      { parse_mode: "HTML" },
+    );
+  });
+
   safeCmd("reset", async (ctx) => {
     if (!ctx.from) return;
     // Hitung yg akan dihapus
@@ -263,33 +359,83 @@ export function createBot(env: Env): Bot<Ctx> {
   safeCmd("export", async (ctx) => {
     if (!ctx.from) return;
     const tz = "Asia/Jakarta";
-    const monthStart = startOfMonthSec(tz);
-    const txns = await listTransactionsInRange(env.DB, ctx.from.id, monthStart, nowSec() + 1);
+    // Export ALL data (not just this month)
+    const txns = await listTransactionsInRange(env.DB, ctx.from.id, 0, nowSec() + 1);
     if (txns.results.length === 0) {
-      await ctx.reply("Belum ada transaksi bulan ini untuk diexport.");
+      await ctx.reply("Belum ada transaksi untuk diexport.");
       return;
     }
-    const header = "id,occurred_at,amount,currency,merchant,description,category,source,payment_method\n";
-    const rows = txns.results
-      .map((t) =>
-        [
-          t.id,
-          new Date(t.occurred_at * 1000).toISOString(),
-          t.amount,
-          t.currency,
-          csv(t.merchant),
-          csv(t.description),
-          csv(t.category_name),
-          t.source,
-          csv(t.payment_method),
-        ].join(","),
-      )
-      .join("\n");
-    const csvText = header + rows;
+
+    await ctx.replyWithChatAction("upload_document");
+    const XLSX = await import("xlsx");
+
+    // Sheet 1: Summary
+    const totalAmount = txns.results.reduce((s, t) => s + t.amount, 0);
+    const byCat = new Map<string, { total: number; count: number }>();
+    const byMonth = new Map<string, { total: number; count: number }>();
+    for (const t of txns.results) {
+      const catName = t.category_name ?? "(Tanpa kategori)";
+      const ce = byCat.get(catName) ?? { total: 0, count: 0 };
+      ce.total += t.amount; ce.count++;
+      byCat.set(catName, ce);
+
+      const month = new Date(t.occurred_at * 1000).toISOString().slice(0, 7);
+      const me = byMonth.get(month) ?? { total: 0, count: 0 };
+      me.total += t.amount; me.count++;
+      byMonth.set(month, me);
+    }
+
+    const summary: (string | number)[][] = [
+      ["DuitKu Export", "", "", ""],
+      ["Generated", new Date().toISOString(), "", ""],
+      ["User", ctx.from.first_name ?? "", "", ""],
+      [],
+      ["RINGKASAN", "", "", ""],
+      ["Total transaksi", txns.results.length, "", ""],
+      ["Total nominal (Rp)", Math.round(totalAmount), "", ""],
+      ["Rata-rata per transaksi (Rp)", Math.round(totalAmount / txns.results.length), "", ""],
+      [],
+      ["PER KATEGORI", "", "", ""],
+      ["Kategori", "Total (Rp)", "Jumlah Transaksi", "% Total"],
+      ...Array.from(byCat.entries())
+        .sort((a, b) => b[1].total - a[1].total)
+        .map(([name, agg]) => [name, Math.round(agg.total), agg.count, `${((agg.total / totalAmount) * 100).toFixed(1)}%`]),
+      [],
+      ["PER BULAN", "", "", ""],
+      ["Bulan", "Total (Rp)", "Jumlah Transaksi", "Avg per transaksi (Rp)"],
+      ...Array.from(byMonth.entries())
+        .sort((a, b) => (a[0] > b[0] ? -1 : 1))
+        .map(([month, agg]) => [month, Math.round(agg.total), agg.count, Math.round(agg.total / agg.count)]),
+    ];
+    const wsSummary = XLSX.utils.aoa_to_sheet(summary);
+    wsSummary["!cols"] = [{ wch: 32 }, { wch: 18 }, { wch: 18 }, { wch: 22 }];
+
+    // Sheet 2: Detail Transactions
+    const txnData = txns.results.map((t) => ({
+      "ID": t.id,
+      "Tanggal": new Date(t.occurred_at * 1000).toLocaleDateString("id-ID"),
+      "Waktu": new Date(t.occurred_at * 1000).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }),
+      "Merchant": t.merchant ?? "",
+      "Deskripsi": t.description ?? "",
+      "Kategori": t.category_name ?? "",
+      "Nominal (Rp)": Math.round(t.amount),
+      "Metode Bayar": t.payment_method ?? "",
+      "Source": t.source,
+      "Ada Foto?": t.receipt_id ? "Ya" : "Tidak",
+    }));
+    const wsDetail = XLSX.utils.json_to_sheet(txnData);
+    wsDetail["!cols"] = [{ wch: 6 }, { wch: 12 }, { wch: 8 }, { wch: 28 }, { wch: 28 }, { wch: 18 }, { wch: 14 }, { wch: 16 }, { wch: 10 }, { wch: 10 }];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, wsSummary, "Ringkasan");
+    XLSX.utils.book_append_sheet(wb, wsDetail, "Transaksi");
+
+    const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Uint8Array;
     const { InputFile } = await import("grammy");
-    await ctx.replyWithDocument(
-      new InputFile(new TextEncoder().encode(csvText), `duitku-${monthNameID(new Date(), tz).replace(" ", "-")}.csv`),
-    );
+    const fname = `duitku-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    await ctx.replyWithDocument(new InputFile(buf, fname), {
+      caption: `📊 Export DuitKu — ${txns.results.length} transaksi · ${formatIDRFull(totalAmount)}`,
+    });
   });
 
   // ---- PHOTO HANDLER ----
@@ -643,6 +789,12 @@ function parseAmount(s: string): number | null {
   else if (unit === "jt" || unit === "juta") n *= 1_000_000;
   else if (unit === "m") n *= 1_000_000_000;
   return n;
+}
+
+function barChart(pct: number, len = 10): string {
+  const p = Math.max(0, Math.min(100, pct));
+  const filled = Math.round((p / 100) * len);
+  return "▰".repeat(filled) + "▱".repeat(len - filled);
 }
 
 function csv(s: string | null | undefined): string {

@@ -316,6 +316,214 @@ export async function listAllUsers(d1: D1Database) {
   return d1.prepare("SELECT * FROM users").all<any>();
 }
 
+// ---- BUDGETS ----
+
+export interface BudgetRow {
+  id: number;
+  user_id: number;
+  category_id: number | null;
+  amount: number;
+  period: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export async function listBudgets(d1: D1Database, userId: number) {
+  return d1
+    .prepare(
+      `SELECT b.*, c.name AS category_name, c.icon AS category_icon
+       FROM budgets b LEFT JOIN categories c ON b.category_id = c.id
+       WHERE b.user_id = ? ORDER BY b.category_id IS NULL, c.name`,
+    )
+    .bind(userId)
+    .all<BudgetRow & { category_name: string | null; category_icon: string | null }>();
+}
+
+export async function upsertBudget(
+  d1: D1Database,
+  userId: number,
+  categoryId: number | null,
+  amount: number,
+) {
+  const now = nowSec();
+  // Try update first
+  const existing = await d1
+    .prepare(
+      "SELECT id FROM budgets WHERE user_id = ? AND " +
+        (categoryId === null ? "category_id IS NULL" : "category_id = ?"),
+    )
+    .bind(...(categoryId === null ? [userId] : [userId, categoryId]))
+    .first<{ id: number }>();
+  if (existing) {
+    await d1
+      .prepare("UPDATE budgets SET amount = ?, updated_at = ? WHERE id = ?")
+      .bind(amount, now, existing.id)
+      .run();
+    return existing.id;
+  }
+  const r = await d1
+    .prepare(
+      "INSERT INTO budgets (user_id, category_id, amount, period, created_at, updated_at) VALUES (?, ?, ?, 'monthly', ?, ?)",
+    )
+    .bind(userId, categoryId, amount, now, now)
+    .run();
+  return r.meta.last_row_id as number;
+}
+
+export async function deleteBudget(d1: D1Database, id: number, userId: number) {
+  await d1
+    .prepare("DELETE FROM budgets WHERE id = ? AND user_id = ?")
+    .bind(id, userId)
+    .run();
+}
+
+// Spend per kategori untuk perbandingan budget
+export async function spendByCategory(
+  d1: D1Database,
+  userId: number,
+  fromSec: number,
+  toSec: number,
+): Promise<Map<number, number>> {
+  const r = await d1
+    .prepare(
+      `SELECT category_id, SUM(amount) as total FROM transactions
+       WHERE user_id = ? AND is_deleted = 0 AND occurred_at >= ? AND occurred_at < ?
+       GROUP BY category_id`,
+    )
+    .bind(userId, fromSec, toSec)
+    .all<{ category_id: number | null; total: number }>();
+  const m = new Map<number, number>();
+  for (const row of r.results) {
+    if (row.category_id !== null) m.set(row.category_id, row.total);
+  }
+  return m;
+}
+
+// ---- ALERT LOG (dedup) ----
+
+export async function wasAlertSent(d1: D1Database, userId: number, kind: string, key: string) {
+  const r = await d1
+    .prepare("SELECT id FROM alert_log WHERE user_id = ? AND kind = ? AND key = ? LIMIT 1")
+    .bind(userId, kind, key)
+    .first();
+  return !!r;
+}
+
+export async function logAlert(d1: D1Database, userId: number, kind: string, key: string) {
+  await d1
+    .prepare("INSERT INTO alert_log (user_id, kind, key, sent_at) VALUES (?, ?, ?, ?)")
+    .bind(userId, kind, key, nowSec())
+    .run();
+}
+
+// ---- USER SETTINGS ----
+
+export async function getUserSettings(d1: D1Database, userId: number) {
+  let r = await d1
+    .prepare("SELECT * FROM user_settings WHERE user_id = ?")
+    .bind(userId)
+    .first<any>();
+  if (!r) {
+    await d1
+      .prepare(
+        "INSERT INTO user_settings (user_id, updated_at) VALUES (?, ?)",
+      )
+      .bind(userId, nowSec())
+      .run();
+    r = {
+      user_id: userId,
+      budget_alerts_enabled: 1,
+      weekly_insights_enabled: 1,
+      monthly_summary_enabled: 1,
+      updated_at: nowSec(),
+    };
+  }
+  return r;
+}
+
+export async function updateUserSettings(
+  d1: D1Database,
+  userId: number,
+  patch: { budget_alerts_enabled?: boolean; weekly_insights_enabled?: boolean; monthly_summary_enabled?: boolean },
+) {
+  await getUserSettings(d1, userId); // ensure exists
+  const sets: string[] = [];
+  const vals: any[] = [];
+  if (patch.budget_alerts_enabled !== undefined) {
+    sets.push("budget_alerts_enabled = ?");
+    vals.push(patch.budget_alerts_enabled ? 1 : 0);
+  }
+  if (patch.weekly_insights_enabled !== undefined) {
+    sets.push("weekly_insights_enabled = ?");
+    vals.push(patch.weekly_insights_enabled ? 1 : 0);
+  }
+  if (patch.monthly_summary_enabled !== undefined) {
+    sets.push("monthly_summary_enabled = ?");
+    vals.push(patch.monthly_summary_enabled ? 1 : 0);
+  }
+  if (sets.length === 0) return;
+  sets.push("updated_at = ?");
+  vals.push(nowSec(), userId);
+  await d1
+    .prepare(`UPDATE user_settings SET ${sets.join(", ")} WHERE user_id = ?`)
+    .bind(...vals)
+    .run();
+}
+
+// ---- TRANSACTION UPDATE (full) ----
+
+export async function updateTransactionFull(
+  d1: D1Database,
+  id: number,
+  userId: number,
+  patch: {
+    amount?: number;
+    categoryId?: number | null;
+    merchant?: string | null;
+    description?: string | null;
+    occurredAt?: number;
+    paymentMethod?: string | null;
+  },
+) {
+  const sets: string[] = [];
+  const vals: any[] = [];
+  if (patch.amount !== undefined) { sets.push("amount = ?"); vals.push(patch.amount); }
+  if (patch.categoryId !== undefined) { sets.push("category_id = ?"); vals.push(patch.categoryId); }
+  if (patch.merchant !== undefined) { sets.push("merchant = ?"); vals.push(patch.merchant); }
+  if (patch.description !== undefined) { sets.push("description = ?"); vals.push(patch.description); }
+  if (patch.occurredAt !== undefined) { sets.push("occurred_at = ?"); vals.push(patch.occurredAt); }
+  if (patch.paymentMethod !== undefined) { sets.push("payment_method = ?"); vals.push(patch.paymentMethod); }
+  if (sets.length === 0) return;
+  vals.push(id, userId);
+  await d1
+    .prepare(`UPDATE transactions SET ${sets.join(", ")} WHERE id = ? AND user_id = ?`)
+    .bind(...vals)
+    .run();
+}
+
+// ---- DAILY SERIES (for line chart) ----
+
+export async function dailyTotals(
+  d1: D1Database,
+  userId: number,
+  fromSec: number,
+  toSec: number,
+  tzOffsetSec: number = 7 * 3600,
+): Promise<Array<{ date: string; total: number; count: number }>> {
+  // Convert occurred_at (UTC sec) → local date by adding offset
+  const r = await d1
+    .prepare(
+      `SELECT strftime('%Y-%m-%d', occurred_at + ${tzOffsetSec}, 'unixepoch') AS date,
+              SUM(amount) AS total, COUNT(*) AS count
+       FROM transactions
+       WHERE user_id = ? AND is_deleted = 0 AND occurred_at >= ? AND occurred_at < ?
+       GROUP BY date ORDER BY date`,
+    )
+    .bind(userId, fromSec, toSec)
+    .all<{ date: string; total: number; count: number }>();
+  return r.results;
+}
+
 // ---- LOGIN LINKS (deep link auth) ----
 
 export async function createLoginLink(d1: D1Database, token: string, ttlSec = 600) {
