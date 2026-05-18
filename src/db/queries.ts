@@ -524,6 +524,108 @@ export async function dailyTotals(
   return r.results;
 }
 
+// ---- PENDING JOBS (retry queue) ----
+
+export interface PendingJob {
+  id: number;
+  user_id: number;
+  chat_id: number;
+  kind: "photo" | "text";
+  payload_json: string;
+  attempts: number;
+  max_attempts: number;
+  next_retry_at: number;
+  last_error: string | null;
+  status: "pending" | "done" | "failed";
+  created_at: number;
+  updated_at: number;
+}
+
+export async function enqueueJob(
+  d1: D1Database,
+  data: {
+    userId: number; chatId: number;
+    kind: "photo" | "text"; payload: object;
+    delaySec?: number;
+  },
+): Promise<number> {
+  const now = nowSec();
+  const r = await d1
+    .prepare(
+      `INSERT INTO pending_jobs (user_id, chat_id, kind, payload_json, attempts, max_attempts, next_retry_at, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 0, 5, ?, 'pending', ?, ?)`,
+    )
+    .bind(
+      data.userId, data.chatId, data.kind,
+      JSON.stringify(data.payload),
+      now + (data.delaySec ?? 60),
+      now, now,
+    )
+    .run();
+  return r.meta.last_row_id as number;
+}
+
+export async function dueJobs(d1: D1Database, limit = 20) {
+  return d1
+    .prepare(
+      `SELECT * FROM pending_jobs WHERE status = 'pending' AND next_retry_at <= ? ORDER BY next_retry_at LIMIT ?`,
+    )
+    .bind(nowSec(), limit)
+    .all<PendingJob>();
+}
+
+export async function markJobDone(d1: D1Database, id: number) {
+  await d1.prepare("UPDATE pending_jobs SET status = 'done', updated_at = ? WHERE id = ?").bind(nowSec(), id).run();
+}
+
+export async function bumpJobRetry(d1: D1Database, id: number, error: string, backoffSec: number) {
+  const now = nowSec();
+  await d1
+    .prepare(
+      `UPDATE pending_jobs SET attempts = attempts + 1, last_error = ?, next_retry_at = ?, updated_at = ?,
+       status = CASE WHEN attempts + 1 >= max_attempts THEN 'failed' ELSE 'pending' END WHERE id = ?`,
+    )
+    .bind(error.slice(0, 500), now + backoffSec, now, id)
+    .run();
+}
+
+export async function countPendingForUser(d1: D1Database, userId: number) {
+  const r = await d1
+    .prepare("SELECT COUNT(*) as c FROM pending_jobs WHERE user_id = ? AND status = 'pending'")
+    .bind(userId)
+    .first<{ c: number }>();
+  return r?.c ?? 0;
+}
+
+// ---- PROVIDER STATS (observability) ----
+
+export async function logProviderCall(
+  d1: D1Database,
+  data: { provider: string; kind: "receipt" | "text"; success: boolean; durationMs?: number; error?: string },
+) {
+  await d1
+    .prepare("INSERT INTO provider_stats (provider, kind, success, duration_ms, error, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .bind(data.provider, data.kind, data.success ? 1 : 0, data.durationMs ?? null, data.error?.slice(0, 200) ?? null, nowSec())
+    .run();
+}
+
+export async function getProviderStats(d1: D1Database, hoursBack = 24) {
+  const since = nowSec() - hoursBack * 3600;
+  return d1
+    .prepare(
+      `SELECT provider, kind,
+              COUNT(*) as total,
+              SUM(success) as success,
+              AVG(CASE WHEN success = 1 THEN duration_ms END) as avg_ms,
+              MAX(error) as last_error
+       FROM provider_stats WHERE created_at >= ?
+       GROUP BY provider, kind
+       ORDER BY total DESC`,
+    )
+    .bind(since)
+    .all<{ provider: string; kind: string; total: number; success: number; avg_ms: number | null; last_error: string | null }>();
+}
+
 // ---- LOGIN LINKS (deep link auth) ----
 
 export async function createLoginLink(d1: D1Database, token: string, ttlSec = 600) {

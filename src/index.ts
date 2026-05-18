@@ -5,6 +5,7 @@ import { createBot } from "./bot/handlers";
 import { miniAppApi } from "./api/miniapp";
 import { runMonthlySummary } from "./cron/summary";
 import { runDailyBudgetCheck, runWeeklyInsights } from "./cron/alerts";
+import { runQueueProcessor } from "./cron/queue";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -34,16 +35,20 @@ export default {
   fetch: app.fetch,
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     const d = new Date(event.scheduledTime);
-    // Cron triggers: budget daily (3 UTC = 10 WIB), weekly Sunday (4 UTC), monthly 1st (1 UTC = 8 WIB)
     const hour = d.getUTCHours();
+    const minute = d.getUTCMinutes();
     const dayOfMonth = d.getUTCDate();
-    const dayOfWeek = d.getUTCDay(); // 0 = Sunday
+    const dayOfWeek = d.getUTCDay();
 
-    if (dayOfMonth === 1 && hour === 1) {
+    // Always process queue (runs every 5 min via */5 cron)
+    ctx.waitUntil(runQueueProcessor(env));
+
+    // Daily/weekly/monthly tasks based on time
+    if (dayOfMonth === 1 && hour === 1 && minute < 10) {
       ctx.waitUntil(runMonthlySummary(env));
-    } else if (dayOfWeek === 0 && hour === 4) {
+    } else if (dayOfWeek === 0 && hour === 4 && minute < 10) {
       ctx.waitUntil(runWeeklyInsights(env));
-    } else {
+    } else if (hour === 3 && minute < 10) {
       ctx.waitUntil(runDailyBudgetCheck(env));
     }
   },

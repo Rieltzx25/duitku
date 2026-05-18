@@ -4,17 +4,22 @@ compatibility_date = "2025-11-01"
 compatibility_flags = ["nodejs_compat"]
 
 # Cron triggers (UTC):
+# - Setiap 5 menit → process queue (LLM retry)
 # - 01:00 tgl 1 (08:00 WIB) → monthly summary
 # - 04:00 Minggu (11:00 WIB) → weekly insights
 # - 03:00 setiap hari (10:00 WIB) → budget alerts
 [triggers]
-crons = ["0 1 1 * *", "0 4 * * SUN", "0 3 * * *"]
+crons = ["*/5 * * * *"]
 
 [[d1_databases]]
 binding = "DB"
 database_name = "duitku_db"
 database_id = "5a8b911b-1653-49cb-a178-625cbcd3b693"
 migrations_dir = "migrations"
+
+# Cloudflare Workers AI — native fallback untuk vision/LLM
+[ai]
+binding = "AI"
 
 [vars]
 # Non-secret vars di sini. Secrets pakai `wrangler secret put`

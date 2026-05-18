@@ -16,7 +16,11 @@ import {
   aggregateByMerchant,
   claimLoginLink,
 } from "../db/queries";
-import { parseReceiptImage, parseTextInput, generateSummary } from "../llm/parse";
+import { generateSummary } from "../llm/parse";
+import { routeReceipt, routeText, type RouterResult } from "../llm/router";
+import {
+  enqueueJob, logProviderCall, countPendingForUser, getProviderStats,
+} from "../db/queries";
 import {
   formatReceiptConfirmation,
   formatTextConfirmation,
@@ -272,6 +276,31 @@ export function createBot(env: Env): Bot<Ctx> {
     });
   });
 
+  safeCmd("stats", async (ctx) => {
+    if (!ctx.from) return;
+    const stats = await getProviderStats(env.DB, 24);
+    const pending = await countPendingForUser(env.DB, ctx.from.id);
+    const lines = [
+      `<b>📊 System Stats (24 jam)</b>`,
+      ``,
+      `Queue pending: ${pending}`,
+      ``,
+      `<b>Provider performance:</b>`,
+    ];
+    if (stats.results.length === 0) {
+      lines.push(`<i>Belum ada data.</i>`);
+    } else {
+      for (const s of stats.results) {
+        const rate = s.total > 0 ? ((s.success / s.total) * 100).toFixed(0) : "0";
+        const ms = s.avg_ms ? `${Math.round(s.avg_ms)}ms` : "—";
+        const emoji = parseInt(rate) >= 90 ? "🟢" : parseInt(rate) >= 70 ? "🟡" : "🔴";
+        lines.push(`${emoji} <code>${s.provider}</code> (${s.kind})`);
+        lines.push(`   ${s.success}/${s.total} sukses (${rate}%) · avg ${ms}`);
+      }
+    }
+    await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
+  });
+
   safeCmd("settings", async (ctx) => {
     if (!ctx.from) return;
     const { getUserSettings } = await import("../db/queries");
@@ -467,8 +496,44 @@ export function createBot(env: Env): Bot<Ctx> {
       const ext = file.file_path.split(".").pop() ?? "jpg";
       const mime = ext === "png" ? "image/png" : "image/jpeg";
 
-      // Parse dengan Gemini (foto sudah didownload ke memory)
-      const parsed = await parseReceiptImage(env, imageBuffer, mime);
+      // Parse dengan router (multi-provider fallback)
+      let routeResult: RouterResult<any>;
+      try {
+        routeResult = await routeReceipt(imageBuffer, mime, env);
+      } catch (e: any) {
+        // Semua provider gagal → masuk queue, balas user friendly
+        console.error("[PHOTO] All providers failed:", e?.message);
+        // Log semua attempt ke stats
+        // (router sudah log to console; stats logging dilakukan di catch nya kalau ada)
+        const jobId = await enqueueJob(env.DB, {
+          userId: ctx.from.id,
+          chatId: ctx.chat!.id,
+          kind: "photo",
+          payload: {
+            telegramFileId: largest.file_id,
+            telegramFileUniqueId: largest.file_unique_id,
+            mime,
+            replyMessageId: ctx.message.message_id,
+          },
+          delaySec: 60,
+        });
+        await ctx.reply(
+          `⏳ AI lagi sibuk. Foto kamu udah dimasukin antrian (#${jobId}) — bakal auto-process dalam 1-5 menit.\n\nKalau buru-buru, ketik manual aja:\n<code>[merchant] [nominal]</code>\nContoh: <code>Indomaret 47500</code>`,
+          { parse_mode: "HTML" },
+        );
+        return;
+      }
+      const parsed = routeResult.data;
+      // Log per-attempt stats untuk observability
+      for (const a of routeResult.attempts) {
+        await logProviderCall(env.DB, {
+          provider: a.provider,
+          kind: "receipt",
+          success: !a.error,
+          durationMs: a.durationMs,
+          error: a.error,
+        });
+      }
 
       // Save receipt record (cuma metadata + telegram file_id)
       await saveReceipt(env.DB, {
@@ -574,7 +639,30 @@ export function createBot(env: Env): Bot<Ctx> {
     await ctx.replyWithChatAction("typing");
 
     try {
-      const parsed = await parseTextInput(env, text);
+      let routeResult: RouterResult<any>;
+      try {
+        routeResult = await routeText(text, env);
+      } catch (e: any) {
+        // Queue for retry
+        const jobId = await enqueueJob(env.DB, {
+          userId: ctx.from.id,
+          chatId: ctx.chat!.id,
+          kind: "text",
+          payload: { text, replyMessageId: ctx.message.message_id },
+          delaySec: 60,
+        });
+        await ctx.reply(
+          `⏳ AI lagi sibuk. Pesan kamu dimasukin antrian (#${jobId}) — bakal di-process dalam 1-5 menit.`,
+        );
+        return;
+      }
+      const parsed = routeResult.data;
+      for (const a of routeResult.attempts) {
+        await logProviderCall(env.DB, {
+          provider: a.provider, kind: "text",
+          success: !a.error, durationMs: a.durationMs, error: a.error,
+        });
+      }
 
       if (!parsed.isExpense) {
         await ctx.reply(
